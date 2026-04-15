@@ -9,11 +9,11 @@ on:
   schedule:
     - cron: '36 3 * * *'
   push:
-    branches:[ "master" ] # Make sure your repo uses 'master' and not 'main'!
+    branches: [ "master" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
-    branches:[ "master" ]
+    branches: [ "master" ]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -43,7 +43,7 @@ jobs:
         with:
           cosign-release: 'v2.2.4'
 
-      # REQUIRED FOR MULTI-ARCH: Set up QEMU emulator
+      # --- ADDED THIS: Set up QEMU for multi-arch builds (ARM64) ---
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -78,22 +78,29 @@ jobs:
         uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
         with:
           context: .
-          # REQUIRED: Tell Buildx to compile for both architectures
+          # --- ADDED THIS: Define multi-arch platforms ---
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # OPTIONAL: Pass the build date and version to your Dockerfile ARG
-          build-args: |
-            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # --- ADDED THIS: Map metadata variables into the Dockerfile ARGs ---
+          build-args: |
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
 
       # Sign the resulting Docker image digest except on PRs.
+      # This will only write to the public Rekor transparency log when the Docker
+      # repository is public to avoid leaking data.  If you would like to publish
+      # transparency data even for private images, pass --force to cosign below.
+      # https://github.com/sigstore/cosign
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}
         env:
+          # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        # This step uses the identity token to provision an ephemeral certificate
+        # against the sigstore community Fulcio instance.
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
